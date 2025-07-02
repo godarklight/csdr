@@ -35,9 +35,7 @@ void Agc<T>::process(T* input, T* output, size_t work_size) {
 	float input_abs;
 	float error, dgain;
 
-	float xk, vk, rk;
-	float dt = 0.5;
-	float beta = 0.005;
+	float beta = 0.02;
 
     for (int i = 0; i < work_size; i++) {
         //We skip samples containing 0, as the gain would be infinity for those to keep up with the reference.
@@ -45,7 +43,16 @@ void Agc<T>::process(T* input, T* output, size_t work_size) {
             //The error is the difference between the required gain at the actual sample, and the previous gain value.
             //We actually use an envelope detector.
             input_abs = this->abs(input[i]);
-            error = (input_abs * gain) / reference;
+            if (env_detect < input_abs)
+            {
+                env_detect = input_abs;
+            }
+            else
+            {
+                env_detect = env_detect * 0.999;
+            }
+
+            error = (env_detect * target_gain) / reference;
 
             //An AGC is something nonlinear that's easier to implement in software:
             //if the amplitude decreases, we increase the gain by minimizing the gain error by attack_rate.
@@ -58,9 +65,9 @@ void Agc<T>::process(T* input, T* output, size_t work_size) {
             if (error > 1) {
                 //INCREASE IN SIGNAL LEVEL
                 //If the signal level increases, we decrease the gain quite fast.
-                dgain = 1 - attack_rate;
+                target_gain = target_gain / error;
                 //Before starting to increase the gain next time, we will be waiting until hang_time for sure.
-                hang_counter = hang_time;
+                hang_counter = hang_time + 128;
             } else {
                 //DECREASE IN SIGNAL LEVEL
                 if (hang_counter > 0) {
@@ -70,30 +77,34 @@ void Agc<T>::process(T* input, T* output, size_t work_size) {
                 } else {
                     dgain = 1 + decay_rate; //If the signal level decreases, we increase the gain quite slowly.
                 }
+                target_gain = target_gain * dgain;
             }
-            gain = gain * dgain;
         }
 
-        // alpha beta filter
-        xk = this->xk + (this->vk * dt);
-        vk = this->vk;
+        gain = gain * (1.0 - beta) + (target_gain * beta);
 
-        rk = gain - xk;
 
-        xk += gain_filter_alpha * rk;
-        vk += (beta * rk) / dt;
-
-        this->xk = xk;
-        this->vk = vk;
-
-        gain = this->xk;
 
         // clamp gain to max_gain and 0
-        if (gain > max_gain) gain = max_gain;
-        if (gain < 0) gain = 0;
+        if (target_gain > max_gain) target_gain = max_gain;
+        if (target_gain < 0) target_gain = 0;
 
         // actual sample scaling
-        output[i] = scale(input[i]);
+        if (i < 128)
+        {
+            output[i] = scale(last_samples[i]);
+        }
+        else
+        {
+            output[i] = scale(input[i - 128]);
+        }
+    }
+
+
+
+    for (int i = 0; i < 128; i++)
+    {
+        last_samples[i] = input[(work_size - 128) + i];
     }
 }
 

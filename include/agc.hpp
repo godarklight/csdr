@@ -70,6 +70,10 @@ namespace Csdr {
             unsigned long int hang_counter = 0;
             float xk = 0;
             float vk = 0;
+            // readahead 128 samples
+            T last_samples[128];
+            float env_detect = 0;
+            float target_gain = 1;
     };
 
 }
