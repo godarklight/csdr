@@ -27,75 +27,90 @@ This file is part of libcsdr.
 #include <cmath>
 #include <climits>
 #include <algorithm>
+#include <iostream>
 
 using namespace Csdr;
 
 template <typename T>
 void Agc<T>::process(T* input, T* output, size_t work_size) {
-	float input_abs;
-	float error, dgain;
+    float input_abs, envelope, target_gain;
 
-	float xk, vk, rk;
-	float dt = 0.5;
-	float beta = 0.005;
+    //Sets the amount of weight target_gain affects each sample.
+    //Make sure that you can get close the the target by lookahead_size samples.
+    float beta = 0.02;
 
     for (int i = 0; i < work_size; i++) {
-        //We skip samples containing 0, as the gain would be infinity for those to keep up with the reference.
-        if (!isZero(input[i])) {
-            //The error is the difference between the required gain at the actual sample, and the previous gain value.
-            //We actually use an envelope detector.
-            input_abs = this->abs(input[i]);
-            error = (input_abs * gain) / reference;
+        //Grab the envelope of the signal to work out our target gain
+        input_abs = this->abs(input[i]);
+        envelope = this->getEnvelope(input_abs);
+        double new_target_gain = reference / envelope;
 
-            //An AGC is something nonlinear that's easier to implement in software:
-            //if the amplitude decreases, we increase the gain by minimizing the gain error by attack_rate.
-            //We also have a decay_rate that comes into consideration when the amplitude increases.
-            //The higher these rates are, the faster is the response of the AGC to amplitude changes.
-            //However, attack_rate should be higher than the decay_rate as we want to avoid clipping signals.
-            //that had a sudden increase in their amplitude.
-            //It's also important to note that this algorithm has an exponential gain ramp.
+        //If we have detected an event that would cause us to go over our reference, let's pause the agc here and force set target_gain.
+        if ((input_abs * target_gain) > reference)
+        {
+            hang_samples = hang_time + lookahead_size;
 
-            if (error > 1) {
-                //INCREASE IN SIGNAL LEVEL
-                //If the signal level increases, we decrease the gain quite fast.
-                dgain = 1 - attack_rate;
-                //Before starting to increase the gain next time, we will be waiting until hang_time for sure.
-                hang_counter = hang_time;
-            } else {
-                //DECREASE IN SIGNAL LEVEL
-                if (hang_counter > 0) {
-                    //Before starting to increase the gain, we will be waiting until hang_time.
-                    hang_counter--;
-                    dgain = 1; //..until then, AGC is inactive and gain doesn't change.
-                } else {
-                    dgain = 1 + decay_rate; //If the signal level decreases, we increase the gain quite slowly.
-                }
+            //We only want to allow decreases in gain here, this would otherwise be incorrect if we have a smaller impulse after an initial impulse.
+            if (new_target_gain < target_gain)
+            {
+                target_gain = new_target_gain;
             }
-            gain = gain * dgain;
+
         }
 
-        // alpha beta filter
-        xk = this->xk + (this->vk * dt);
-        vk = this->vk;
+        //If we have detected an event that causes us to go over reference, pause the AGC level as it is directly set above.
+        //If we would go over reference, the counter is reset along with the target gain above.
+        if (hang_samples > 0)
+        {
+            hang_samples--;
+        }
+        else
+        {
+            //Set the target gain so that our signal is brought up to the reference level.
+            target_gain = target_gain * (1.0 - beta) + new_target_gain * beta;
+        }
 
-        rk = gain - xk;
 
-        xk += gain_filter_alpha * rk;
-        vk += (beta * rk) / dt;
+        //Clamp gain to max_gain and 0
+        if (target_gain > max_gain) target_gain = max_gain;
+        if (target_gain < 0) target_gain = 0;
 
-        this->xk = xk;
-        this->vk = vk;
+        //Lowpass filter the actual gain.
+        gain = gain * (1.0 - beta) + (target_gain * beta);
 
-        gain = this->xk;
+        //std::cerr << "gain: " << gain << ", target_gain: " << target_gain << ", envelope: " << envelope << std::endl;
 
-        // clamp gain to max_gain and 0
-        if (gain > max_gain) gain = max_gain;
-        if (gain < 0) gain = 0;
-
-        // actual sample scaling
-        output[i] = scale(input[i]);
+        //Because we have added delay, our first samples are in last_samples, and then the current input array is used.
+        if (i < lookahead_size)
+        {
+            output[i] = scale(last_samples[i]);
+        }
+        else
+        {
+            output[i] = scale(input[i - lookahead_size]);
+        }
+    }
+    //We need to save the last lookahead_size samples for the next call.
+    for (int i = 0; i < lookahead_size; i++)
+    {
+        last_samples[i] = input[(work_size - lookahead_size) + i];
     }
 }
+
+template <typename T>
+float Agc<T>::getEnvelope(float in)
+{
+    if (in > env_detect)
+    {
+        env_detect = in;
+    }
+    else
+    {
+        env_detect = env_detect * (1.0 - decay_rate);
+    }
+    return env_detect;
+}
+
 
 template <>
 float Agc<short>::abs(short in) {
@@ -146,10 +161,13 @@ bool Agc<complex<float>>::isZero(complex<float> in) {
 template <>
 complex<float> Agc<complex<float>>::scale(complex<float> in) {
     complex<float> val = in * gain;
-    if (val.i() > 1.0f) val.i(1.0f);
-    if (val.q() > 1.0f) val.q(1.0f);
-    if (val.i() < -1.0f) val.i(-1.0f);
-    if (val.q() < -1.0f) val.q(-1.0f);
+    //Don't clip IQ individually, clip the magnitude of the complex number. std::abs returns magnitude for std::complex.
+    //This form of clipping sounds much better than clipping a real valued signal.
+    float mag = abs(val);
+    if (mag > 1.0)
+    {
+        val = val / mag;
+    }
     return val;
 }
 
