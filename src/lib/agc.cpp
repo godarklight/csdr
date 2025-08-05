@@ -32,7 +32,7 @@ using namespace Csdr;
 
 template <typename T>
 void Agc<T>::process(T* input, T* output, size_t work_size) {
-    float input_abs, error, dgain;
+    float error, dgain;
 
     for (int i = 0; i < work_size; i++) {
         // We skip samples containing 0, as the gain would be infinity
@@ -41,8 +41,8 @@ void Agc<T>::process(T* input, T* output, size_t work_size) {
             // The error is the difference between the required gain at
             // the actual sample, and the previous gain value.
             // We actually use an envelope detector.
-            input_abs = this->abs(input[i]);
-            error = (input_abs * gain) / reference;
+            float input_envelope = this->envelope(input[i]);
+            error = (input_envelope * gain) / reference;
 
             // An AGC is something nonlinear that's easier to implement in
             // software:
@@ -91,9 +91,24 @@ void Agc<T>::process(T* input, T* output, size_t work_size) {
         }
 
         // Actual sample scaling
-        output[i] = scale(input[i]);
+        //output[i] = scale(input[i]);
+        //fprintf(stderr, "%f,%f\n", gain, gain * abs(input[i]));
+
+        if (i < 128)
+        {
+            output[i] = scale(last_samples[i]);
+            //fprintf(stderr, "%f,%f\n", gain, gain * abs(last_samples[i]));
+            last_samples[i] = input[work_size - 128 + i];
+
+        }
+        else
+        {
+            output[i] = scale(input[i - 128]);
+            //fprintf(stderr, "%f,%f\n", gain, gain * abs(input[i - 128]));
+        }
     }
 }
+
 
 template <>
 float Agc<short>::abs(short in) {
@@ -149,6 +164,34 @@ complex<float> Agc<complex<float>>::scale(complex<float> in) {
     if (val.i() < -1.0f) val.i(-1.0f);
     if (val.q() < -1.0f) val.q(-1.0f);
     return val;
+}
+
+template <>
+float Agc<short>::envelope(short in) {
+    current_envelope = current_envelope * envelope_decay;
+    float input_abs = abs(in);
+    if (input_abs > current_envelope)
+    {
+        current_envelope = input_abs;
+    }
+    return current_envelope;
+}
+
+template <>
+float Agc<float>::envelope(float in) {
+    current_envelope = current_envelope * envelope_decay;
+    float input_abs = abs(in);
+    if (input_abs > current_envelope)
+    {
+        current_envelope = input_abs;
+    }
+    return current_envelope;
+}
+
+
+template <>
+float Agc<complex<float>>::envelope(complex<float> in) {
+    return std::abs(in);
 }
 
 template <typename T>

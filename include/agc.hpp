@@ -55,6 +55,7 @@ namespace Csdr {
             float abs(T in);
             bool isZero(T in);
             T scale(T in);
+            float envelope(T in);
 
             // params
             // fast profile defaults
@@ -62,14 +63,13 @@ namespace Csdr {
             float attack_rate = 0.1;
             float decay_rate = 0.001;
             float max_gain = 65535;
+            float envelope_decay = 0.999;
             unsigned long int hang_time = 200;
-            float gain_filter_alpha = 1.5;
             // state
             float gain = 1;
-            float last_peak = 0;
+            float current_envelope = 0;
+            T last_samples[128];
             unsigned long int hang_counter = 0;
-            float xk = 0;
-            float vk = 0;
     };
 
 }
